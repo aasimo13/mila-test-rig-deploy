@@ -1,0 +1,13 @@
+# MiLa Test Rig - Author: Aaron Simo - Copyright (c) 2026 KRUU US INC. All rights reserved.
+# Run the test via systemd when a USB sound card shows up.
+# Going through systemctl avoids udev killing the test process.
+#
+# A permanent reference mic enumerating at boot is expected and benign here:
+#   - Central builds use an I2S reference, which never matches SUBSYSTEMS=="usb"
+#     below, so it doesn't fire this rule at all.
+#   - Retrofit stations use a USB reference, which DOES match and fires a run
+#     with no DUT seated yet. That's fine: main()'s idle path treats "only the
+#     reference present, no DUT" as ready/idle (exit 0), not an error -- see
+#     usb_audio_test.py main(). So this rule can't produce a spurious failure
+#     just because the reference mic showed up at boot.
+ACTION=="add", SUBSYSTEM=="sound", KERNEL=="card*", SUBSYSTEMS=="usb", RUN+="/usr/bin/systemctl --no-block restart usb-audio-test.service"

@@ -1,0 +1,14 @@
+# MiLa Test Rig - Author: Aaron Simo - Copyright (c) 2026 KRUU US INC. All rights reserved.
+[Unit]
+Description=USB Audio Test Calibration Button
+After=multi-user.target
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/usb_audio_test/usb_audio_test.py --button-daemon
+Restart=always
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

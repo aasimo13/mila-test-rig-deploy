@@ -1,0 +1,24 @@
+# MiLa Test Rig - Author: Aaron Simo - Copyright (c) 2026 KRUU US INC. All rights reserved.
+[Unit]
+Description=USB Audio Card Test
+After=sound.target
+
+[Service]
+# Type=simple, NOT oneshot. On a station error the script runs
+# flash_red_until_cleared(), an intentional never-ending red-flash loop. With
+# oneshot, systemd's start job waits for the process to exit, so that loop would
+# block the job queue forever - if it fires during boot (e.g. powered on with no
+# mic in the box) it jams multi-user.target and the whole boot hangs. With
+# simple, the start job completes the instant the process launches, so the red
+# can flash in the background without blocking anything; the next plug-in event
+# (udev: systemctl --no-block restart) kills it and clears the error.
+Type=simple
+# let the device settle before probing
+ExecStartPre=/bin/sleep 2
+ExecStart=/usr/bin/python3 /opt/usb_audio_test/usb_audio_test.py
+# A FAIL result exits 1; that's a normal outcome (the LED/beep is the signal),
+# not a service failure, so don't let systemd flag it red. Station errors
+# (no USB device, crash) exit 2 and DO show as failures.
+SuccessExitStatus=1
+StandardOutput=journal
+StandardError=journal
