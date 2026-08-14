@@ -141,6 +141,9 @@ CALIBRATION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cal
 # calibration itself (which gates each sweep on this same constant). Set an
 # order of magnitude below the measured healthy level; calibration replaces it
 # with a median-derived floor anyway.
+# max_dut_tilt is deliberately absent here: without calibration there is no
+# idea what a good unit's spectrum looks like, and attribute_silence falls back
+# to reporting a quiet unit as a mic fault rather than guessing at the speaker.
 UNCALIBRATED_REF_FLOORS = {"min_total": 1e-7, "min_match": CAL_REF_MIN_MATCH,
                            # same order-of-magnitude reasoning as min_total, for the
                            # unit's own mic: loose enough that any real recording clears
@@ -411,7 +414,20 @@ def load_thresholds():
         return analysis.default_thresholds(), dict(UNCALIBRATED_REF_FLOORS)
 
 
-def run_calibration(cards):
+def _load_calibration_pool():
+    """The raw per-sweep pool from a previous calibration, or None if the file
+    is missing/unreadable or predates the pool being stored."""
+    try:
+        with open(CALIBRATION_FILE) as f:
+            data = json.load(f)
+        pool = data["pool"]
+        return (pool["scores"], pool["ref_totals"],
+                pool["ref_matches"], pool["dut_totals"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def run_calibration(cards, add=False):
     """Fire N_CAL dual-capture sweeps against a known-good mic seated as the
     DUT, score each against the reference (analysis.score_dut), and persist
     reference-relative thresholds (analysis.compute_calibration) plus
@@ -434,6 +450,17 @@ def run_calibration(cards):
     success (file written), False on any failure. Does not touch LEDs/exit
     codes itself -- main() blinks green and returns 0/2 based on this return
     value, same as the flow it replaces."""
+    prior_scores, prior_ref_totals, prior_ref_matches, prior_dut_totals = [], [], [], []
+    if add:
+        prior = _load_calibration_pool()
+        if prior is None:
+            log("Cannot add to calibration: no usable calibration.json yet. "
+                "Run a normal --calibrate first.")
+            return False
+        prior_scores, prior_ref_totals, prior_ref_matches, prior_dut_totals = prior
+        log(f"Adding to the existing calibration ({len(prior_scores)} sweeps already "
+            f"pooled, presumably from other units). Seat the NEXT known-good unit.")
+
     log(f"Calibrating from {N_CAL} sweeps, recorded back to back.")
     log("Seat a known-good unit properly, close the lid, and LEAVE IT. The "
         "enclosure holds position well enough that reseating moves the score "
@@ -449,6 +476,7 @@ def run_calibration(cards):
     ref_totals = []
     ref_matches = []
     dut_totals = []
+    dut_tilts = []
     for i, sweep in enumerate(sweeps):
         ok, reason = analysis.reference_healthy(sweep["ref_bands"], sweep["ref_match"], UNCALIBRATED_REF_FLOORS)
         if not ok:
@@ -459,9 +487,18 @@ def run_calibration(cards):
         ref_totals.append(sweep["ref_bands"]["total"])
         ref_matches.append(sweep["ref_match"])
         dut_totals.append(sweep["dut_bands"]["total"])
+        dut_tilts.append(score["tilt"])
         log(f"  sweep {i + 1}/{len(sweeps)}: level={score['level']:.3e} "
             f"tilt={score['tilt']:.3f} match={score['match']:.2f} "
             f"ref_total={sweep['ref_bands']['total']:.3e}")
+
+    dut_tilts = [sc["tilt"] for sc in prior_scores] + dut_tilts
+    scores = prior_scores + scores
+    ref_totals = prior_ref_totals + ref_totals
+    ref_matches = prior_ref_matches + ref_matches
+    dut_totals = prior_dut_totals + dut_totals
+    if add:
+        log(f"Pooled {len(scores)} sweeps across all units calibrated so far.")
 
     if len(scores) < CAL_MIN_GOOD_SWEEPS:
         log(f"Calibration FAILED: only {len(scores)}/{N_CAL} good sweeps "
@@ -479,6 +516,12 @@ def run_calibration(cards):
         # means nothing, so attributing a dead speaker vs a deaf rig needs an
         # absolute reading from the unit's own mic.
         "min_dut_total": statistics.median(dut_totals) * CAL_REF_FLOOR_FRACTION,
+        # Ceiling on the unit's own high/low tilt. A unit that has lost a
+        # speaker driver goes quiet AND loses its low end, so its tilt lands
+        # far above a good unit's -- that is what separates it from a plain
+        # dead mic, which just goes quiet. Derived from the good units seen
+        # during calibration, with the same margin as the other gates.
+        "max_dut_tilt": max(dut_tilts) / CAL_MARGINS["hf"],
     }
     data = {
         "thresholds": thresholds,
@@ -489,6 +532,16 @@ def run_calibration(cards):
                           "min": min(ref_matches), "max": max(ref_matches)},
         },
         "samples": len(scores),
+        # The raw pool, so `--calibrate --add` can fold in another known-good
+        # unit rather than starting over. Unit-to-unit spread is real: two good
+        # units measured 1.68x apart on tilt, which is wider than the margin,
+        # so thresholds from a single unit do not reliably cover the next one.
+        "pool": {
+            "scores": scores,
+            "ref_totals": ref_totals,
+            "ref_matches": ref_matches,
+            "dut_totals": dut_totals,
+        },
     }
 
     try:
@@ -866,7 +919,7 @@ def main():
                 set_leds(False, True)
                 return 2
             lock_card_gains(cards["play"], cards["dut"], cards["ref"])
-            if run_calibration(cards):
+            if run_calibration(cards, add="--add" in sys.argv):
                 blink_green(3)
                 return 0
             return 2

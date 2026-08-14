@@ -319,6 +319,22 @@ def attribute_silence(dut_bands, ref_bands, ref_match, floors):
     if ref_heard:
         if dut_heard:
             return "ok", "ok"
+        # The unit is quiet. That is a dead mic ONLY if the spectrum still
+        # looks normal. A unit that has lost a speaker driver is also quiet --
+        # losing one drops its own mic's reading several times over, which
+        # reads exactly like a weak mic -- but it takes the low end with it,
+        # so the high/low tilt lands far ABOVE a good unit instead of near it.
+        # Measured on a unit built with one speaker disconnected: tilt 0.42
+        # against 0.095 for good units, while the reference only fell 1.6x,
+        # well inside its floor. Without this the station called that unit a
+        # dead mic every time.
+        max_tilt = floors.get("max_dut_tilt")
+        low = dut_bands["low"]
+        dut_tilt = (dut_bands["high"] / low) if low > 0 else 0.0
+        if max_tilt is not None and dut_tilt > max_tilt:
+            return "speaker", (f"the unit is quiet (total={dut_bands['total']:.3e}) and has "
+                               f"lost its low end (tilt={dut_tilt:.3f} vs a ceiling of "
+                               f"{max_tilt:.3f}) -- speaker/driver fault, not the mic")
         return "mic", (f"the unit's mic heard nothing (total={dut_bands['total']:.3e}) "
                        f"while the reference heard the chirp -- dead mic")
     if dut_heard:
