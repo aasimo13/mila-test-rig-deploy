@@ -255,14 +255,28 @@ def waveform_match(samples, rate, onset, sweep_dur):
 
     return max(0.0, min(1.0, best_corr))
 
-def score_dut(dut_bands, ref_bands, dut_match):
-    def r(a, b):
-        return (a / b) if b > 0 else 0.0
-    dut_tilt = r(dut_bands["high"], dut_bands["low"])
-    ref_tilt = r(ref_bands["high"], ref_bands["low"])
+def score_dut(dut_bands, dut_match):
+    """Judge the unit's mic on its OWN recording. Nothing here is divided by
+    the reference.
+
+    These used to be ratios against the reference, to cancel speaker-output
+    variation between units. That backfired: the unit plays the chirp through
+    its own speaker, so the reference's reading carries that unit's SPEAKER
+    characteristics, and dividing imported them into the mic's verdict. Two
+    known-good units on kruu-mictest-01 had near-identical mics (dut_total 4%
+    apart) but speakers 1.24x apart, which pushed the divided hf metric 2x
+    apart and failed the second unit as "muffled" against thresholds
+    calibrated on the first.
+
+    The unit's mic sits a fixed distance from its own speaker inside the
+    product, so its own reading is stable across seatings and across units --
+    which is what makes it the right thing to threshold. The speaker is
+    judged separately, by the reference (see attribute_silence and
+    reference_healthy), which is what the reference is actually for."""
+    low = dut_bands["low"]
     return {
-        "level_ratio": r(dut_bands["total"], ref_bands["total"]),
-        "hf_ratio": r(dut_tilt, ref_tilt),
+        "level": dut_bands["total"],
+        "tilt": (dut_bands["high"] / low) if low > 0 else 0.0,
         "match": dut_match,
     }
 
@@ -327,18 +341,18 @@ def evaluate_dut(score, dut_peak_float, thresholds):
     reasons = []
     if dut_peak_float >= thresholds["max_peak"]:
         reasons.append(f"clipping (peak={dut_peak_float:.2f})")
-    if score["level_ratio"] < thresholds["min_level"]:
-        reasons.append(f"level too low (ratio={score['level_ratio']:.2f}) — dead/weak")
-    if score["level_ratio"] > thresholds["max_level"]:
-        reasons.append(f"level too high (ratio={score['level_ratio']:.2f})")
-    if score["hf_ratio"] < thresholds["min_hf_ratio"]:
-        reasons.append(f"no highs (hf_ratio={score['hf_ratio']:.2f}) — muffled")
+    if score["level"] < thresholds["min_level"]:
+        reasons.append(f"level too low ({score['level']:.3e}) — dead/weak")
+    if score["level"] > thresholds["max_level"]:
+        reasons.append(f"level too high ({score['level']:.3e})")
+    if score["tilt"] < thresholds["min_tilt"]:
+        reasons.append(f"no highs (tilt={score['tilt']:.3f}) — muffled")
     if score["match"] < thresholds["min_match"]:
         reasons.append(f"waveform unclean (match={score['match']:.2f}) — distorted")
     return (len(reasons) == 0), reasons
 
 def default_thresholds():
-    return {"min_level": 0.35, "max_level": 3.0, "min_hf_ratio": 0.45,
+    return {"min_level": 0.35, "max_level": 3.0, "min_tilt": 0.45,
             "min_match": 0.55, "max_peak": 0.98}
 
 def _trimmed_low(values, trim):
@@ -365,15 +379,15 @@ def compute_calibration(good_scores, margins, trim=0.0):
 
     Default 0.0 is exactly min()/max(): the right choice when the unit is held
     in ONE good position and the spread is only measurement noise."""
-    levels = [s["level_ratio"] for s in good_scores]
-    hfs = [s["hf_ratio"] for s in good_scores]
+    levels = [s["level"] for s in good_scores]
+    hfs = [s["tilt"] for s in good_scores]
     matches = [s["match"] for s in good_scores]
     lo_level, hi_level = _trimmed_low(levels, trim), _trimmed_high(levels, trim)
     lo_hf, lo_match = _trimmed_low(hfs, trim), _trimmed_low(matches, trim)
     return {
         "min_level": lo_level*margins["level"],
         "max_level": hi_level/margins["level"],
-        "min_hf_ratio": lo_hf*margins["hf"],
+        "min_tilt": lo_hf*margins["hf"],
         "min_match": lo_match*margins["match"],
         "max_peak": default_thresholds()["max_peak"],
         "observed": {"level": [lo_level, hi_level], "hf_min": lo_hf, "match_min": lo_match,

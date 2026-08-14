@@ -396,7 +396,7 @@ def load_thresholds():
     stdlib-only defaults for a not-yet-calibrated station.
 
     Returns (thresholds, ref_floors): thresholds is analysis' DUT-gate dict
-    (min_level/max_level/min_hf_ratio/min_match/max_peak); ref_floors is the
+    (min_level/max_level/min_tilt/min_match/max_peak); ref_floors is the
     reference-health floor dict (min_total/min_match) consumed by
     analysis.reference_healthy. Both come straight from the schema
     run_calibration() writes below. If the file is missing, unreadable, or
@@ -454,13 +454,13 @@ def run_calibration(cards):
         if not ok:
             log(f"calibration sweep rejected: reference unhealthy — {reason}")
             continue
-        score = analysis.score_dut(sweep["dut_bands"], sweep["ref_bands"], sweep["dut_match"])
+        score = analysis.score_dut(sweep["dut_bands"], sweep["dut_match"])
         scores.append(score)
         ref_totals.append(sweep["ref_bands"]["total"])
         ref_matches.append(sweep["ref_match"])
         dut_totals.append(sweep["dut_bands"]["total"])
-        log(f"  sweep {i + 1}/{len(sweeps)}: level={score['level_ratio']:.2f} "
-            f"hf={score['hf_ratio']:.2f} match={score['match']:.2f} "
+        log(f"  sweep {i + 1}/{len(sweeps)}: level={score['level']:.3e} "
+            f"tilt={score['tilt']:.3f} match={score['match']:.2f} "
             f"ref_total={sweep['ref_bands']['total']:.3e}")
 
     if len(scores) < CAL_MIN_GOOD_SWEEPS:
@@ -655,7 +655,7 @@ def evaluate_run(cards, thresholds, ref_floors):
     if verdict in ("speaker", "mic"):
         return "fail", reason
 
-    score = analysis.score_dut(dut_bands, ref_bands, dut_match)
+    score = analysis.score_dut(dut_bands, dut_match)
     ok, reasons = analysis.evaluate_dut(score, dut_peak, thresholds)
     return ("pass", "ok") if ok else ("fail", "; ".join(reasons))
 
@@ -758,10 +758,10 @@ def run_selftest():
             if sweep is None:
                 log("  single sweep: play/record failed")
             else:
-                score = analysis.score_dut(sweep["dut_bands"], sweep["ref_bands"], sweep["dut_match"])
+                score = analysis.score_dut(sweep["dut_bands"], sweep["dut_match"])
                 healthy, reason = analysis.reference_healthy(sweep["ref_bands"], sweep["ref_match"], ref_floors)
-                log(f"  single sweep: level_ratio={score['level_ratio']:.3f} "
-                    f"hf_ratio={score['hf_ratio']:.3f} match={score['match']:.3f} "
+                log(f"  single sweep: level={score['level']:.3e} "
+                    f"tilt={score['tilt']:.3f} match={score['match']:.3f} "
                     f"dut_peak={sweep['dut_peak']:.3f}")
                 log(f"  reference_healthy={healthy} ({reason})")
 
