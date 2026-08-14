@@ -141,7 +141,11 @@ CALIBRATION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cal
 # calibration itself (which gates each sweep on this same constant). Set an
 # order of magnitude below the measured healthy level; calibration replaces it
 # with a median-derived floor anyway.
-UNCALIBRATED_REF_FLOORS = {"min_total": 1e-7, "min_match": CAL_REF_MIN_MATCH}
+UNCALIBRATED_REF_FLOORS = {"min_total": 1e-7, "min_match": CAL_REF_MIN_MATCH,
+                           # same order-of-magnitude reasoning as min_total, for the
+                           # unit's own mic: loose enough that any real recording clears
+                           # it, tight enough to catch true silence.
+                           "min_dut_total": 1e-7}
 
 PASS_BEEP_FREQ = 880
 FAIL_BEEP_FREQ = 200
@@ -444,6 +448,7 @@ def run_calibration(cards):
     scores = []
     ref_totals = []
     ref_matches = []
+    dut_totals = []
     for i, sweep in enumerate(sweeps):
         ok, reason = analysis.reference_healthy(sweep["ref_bands"], sweep["ref_match"], UNCALIBRATED_REF_FLOORS)
         if not ok:
@@ -453,6 +458,7 @@ def run_calibration(cards):
         scores.append(score)
         ref_totals.append(sweep["ref_bands"]["total"])
         ref_matches.append(sweep["ref_match"])
+        dut_totals.append(sweep["dut_bands"]["total"])
         log(f"  sweep {i + 1}/{len(sweeps)}: level={score['level_ratio']:.2f} "
             f"hf={score['hf_ratio']:.2f} match={score['match']:.2f} "
             f"ref_total={sweep['ref_bands']['total']:.3e}")
@@ -468,6 +474,11 @@ def run_calibration(cards):
     ref_floors = {
         "min_total": ref_total_med * CAL_REF_FLOOR_FRACTION,
         "min_match": CAL_REF_MIN_MATCH,
+        # Absolute "did the unit's mic hear anything at all" floor. Separate
+        # from min_level (a ratio): when the reference is silent the ratio
+        # means nothing, so attributing a dead speaker vs a deaf rig needs an
+        # absolute reading from the unit's own mic.
+        "min_dut_total": statistics.median(dut_totals) * CAL_REF_FLOOR_FRACTION,
     }
     data = {
         "thresholds": thresholds,
@@ -635,9 +646,14 @@ def evaluate_run(cards, thresholds, ref_floors):
     ref_match = med([s["ref_match"] for s in sweeps])
     dut_peak = med([s["dut_peak"] for s in sweeps])
 
-    healthy, reason = analysis.reference_healthy(ref_bands, ref_match, ref_floors)
-    if not healthy:
+    # Who was quiet: this unit's speaker, this unit's mic, or the rig? Only
+    # the last is a station fault. A dead speaker used to land here as a
+    # STATION_ERROR, blaming the rig for a defect in the unit.
+    verdict, reason = analysis.attribute_silence(dut_bands, ref_bands, ref_match, ref_floors)
+    if verdict == "rig":
         return "station_error", reason
+    if verdict in ("speaker", "mic"):
+        return "fail", reason
 
     score = analysis.score_dut(dut_bands, ref_bands, dut_match)
     ok, reasons = analysis.evaluate_dut(score, dut_peak, thresholds)

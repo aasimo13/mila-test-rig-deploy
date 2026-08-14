@@ -266,6 +266,56 @@ def score_dut(dut_bands, ref_bands, dut_match):
         "match": dut_match,
     }
 
+def attribute_silence(dut_bands, ref_bands, ref_match, floors):
+    """Work out WHAT was quiet: the unit's speaker, the unit's mic, or the rig.
+
+    The unit under test is both the sound source and one of the two
+    microphones, so a quiet reference on its own is ambiguous -- either this
+    unit's speaker produced nothing, or the rig has stopped hearing. The
+    unit's own mic settles it: it sits a fixed distance from its own speaker,
+    so if it picked the chirp up then sound was definitely made.
+
+        reference heard it + mic heard it   -> ok      (test the details)
+        reference heard it + mic silent     -> mic     (speaker proven good)
+        both silent                         -> speaker (no sound was produced)
+        reference silent + mic heard it     -> rig     (deaf reference)
+
+    Returns (verdict, reason). Only 'rig' is a station fault; 'mic' and
+    'speaker' are defects in the unit and must fail it rather than blaming
+    the rig, which is what every quiet reference used to do.
+
+    Calibrations written before min_dut_total existed do not carry a floor for
+    the unit's mic, and the reference's floor is NOT a stand-in for it -- the
+    two mics sit at very different absolute levels (on kruu-mictest-01 the
+    reference reads ~3.7x hotter), so borrowing it fails good units as
+    'dead mic'. Without a calibrated floor this declines to judge the unit's
+    mic at all and falls back to reference-only gating; recalibrate to get
+    the full attribution."""
+    ref_heard = ref_bands["total"] >= floors["min_total"] and ref_match >= floors["min_match"]
+
+    dut_floor = floors.get("min_dut_total")
+    if dut_floor is None:
+        if ref_heard:
+            return "ok", "ok"
+        return "rig", (f"the reference heard no clean chirp (total={ref_bands['total']:.3e}, "
+                       f"match={ref_match:.2f}); recalibrate to tell a dead unit speaker "
+                       f"from a rig fault")
+    dut_heard = dut_bands["total"] >= dut_floor
+
+    if ref_heard:
+        if dut_heard:
+            return "ok", "ok"
+        return "mic", (f"the unit's mic heard nothing (total={dut_bands['total']:.3e}) "
+                       f"while the reference heard the chirp -- dead mic")
+    if dut_heard:
+        return "rig", (f"the reference heard no clean chirp (total={ref_bands['total']:.3e}, "
+                       f"match={ref_match:.2f}) but the unit's own mic did -- "
+                       f"reference mic or rig fault, not this unit")
+    return "speaker", (f"neither the reference nor the unit's own mic heard a chirp "
+                       f"(ref total={ref_bands['total']:.3e}, unit total="
+                       f"{dut_bands['total']:.3e}) -- the unit's speaker produced no sound")
+
+
 def reference_healthy(ref_bands, ref_match, floors):
     if ref_bands["total"] < floors["min_total"]:
         return False, f"reference heard no/low chirp (total={ref_bands['total']:.3e})"
