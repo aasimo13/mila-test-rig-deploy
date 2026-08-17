@@ -12,21 +12,27 @@ Aaron Simo, with Claude (Anthropic) · Copyright © 2026 KRUU US INC. All rights
 Automated pass/fail test for the USB mic units. The unit goes in the
 sound-dampened box with the Raspberry Pi, next to a fixed reference
 microphone mounted permanently in the box. When you plug the unit in, the Pi
-plays a frequency sweep out the box speaker and records it on the unit's mic
-and the reference mic at the same time, then scores the unit relative to the
-reference instead of against a fixed number. That catches a dead mic, a
-weak/low-sensitivity one, a muffled one (no highs), and a distorted/crackly
-one -- and because everything the reference also hears (speaker aging, box
-acoustics, temperature) cancels out of the ratio, the result stays accurate
-without re-tuning. Result is shown on the LEDs and beeps:
+plays a frequency sweep out the unit's own speaker and records it on the
+unit's mic and the reference mic at the same time.
+
+The two mics do different jobs. The unit's own recording is what the mic is
+judged on: level, high-frequency content, and how clean the waveform is. The
+reference mic judges the unit's speaker, and confirms the sweep actually
+happened, so a rig problem is never blamed on the unit. Between them the
+station separates a dead mic, a weak or muffled one, a distorted one, a weak
+or disconnected speaker, and a fault in the rig itself.
+
+Result is shown on the LEDs and beeps:
 
 - READY: both LEDs blink together (station just started up, no unit in the
   box yet)
 - PASS: green LED (solid) + 2 high beeps
 - FAIL: red LED (solid) + 3 low beeps -- this specific mic failed
-- STATION ERROR: red LED flashing, NO beep -- a rig/reference problem, not a
-  verdict on the mic in the box (reference mic not detected, no playback
-  card, or a crash). Keeps flashing until the next test or calibration
+- STATION ERROR: red LED flashing, NO beep -- not a verdict on the unit in
+  the box. Check the unit is seated properly first: a misplaced unit drops
+  what the reference hears by more than 2x and reads the same as a broken
+  reference. After that, check the reference mic. Keeps flashing until the
+  next test or calibration
   clears it.
 
 The whole test takes several seconds and runs automatically every time a
@@ -86,9 +92,9 @@ the reference. Two ways to fit it:
   - BCLK -> GPIO 18, LRCLK -> GPIO 19, DATA -> GPIO 20, VDD -> 3V3,
     GND -> GND, L/R select -> GND
   - Does not conflict with the LEDs (GPIO 17/27) or the button (GPIO 22)
-  - Needs I2S enabled in `config.txt` and a reboot -- the installer does this
-    for you (see Step 3), but the exact overlay is still bench-unconfirmed;
-    see "Open bench items"
+  - Needs I2S enabled in `config.txt` and a reboot; the installer does this
+    for you (see Step 3). Tie L/R to ground: left floating the mic still works
+    but reads about twice the noise
   - Mount it fixed, close to where the unit under test sits, facing the same way
 - Fallback, field retrofits: any USB mic, as long as its VID/PID is different
   from the product's. Plug it into any free USB port on the Pi. Use this for
@@ -118,37 +124,31 @@ continue below. When `ssh` or `scp` asks for a password, use the one you set abo
 
 ## Step 2: Get the files onto the Pi
 
-1. Download the zip from the Google Drive folder to your computer.
-2. Unzip it. You will get a folder named `MiLa-Test-Rig` with these files:
-   `install.sh`, `usb_audio_test.py`, `analysis.py`, `devices.py`,
-   `usb-audio-test.service`, `usb-audio-test-button.service`,
-   `99-usb-audio-test.rules`, and this `README.md`.
-3. Copy the whole folder to the Pi. From your computer's terminal:
+SSH into the Pi and clone the station repo. It is private, so git will ask
+for your GitHub username and a personal access token:
 
-   ```
-   scp -r MiLa-Test-Rig pi@<pi-hostname>.local:~/
-   ```
+```
+ssh pi@<pi-hostname>.local
+sudo apt-get install -y git
+git clone https://github.com/aasimo13/mila-test-rig-deploy.git
+```
 
-   Replace `<pi-hostname>` with the Pi's hostname (the one set when the SD card
-   was flashed, e.g. `kruu-mictest-01`). If `.local` does not resolve, use the
-   Pi's IP address instead (`scp -r MiLa-Test-Rig pi@10.0.0.50:~/`).
+Replace `<pi-hostname>` with the hostname set when the SD card was flashed,
+e.g. `kruu-mictest-01`. If `.local` does not resolve, use the Pi's IP address.
 
-If you cannot use `scp`, you can also copy the unzipped folder onto a USB stick
-and move it to the Pi that way.
+To update a station later, `git pull` in that folder and run the installer
+again.
+
+If the Pi has no network, copy the same folder over with `scp` from a machine
+that does, or move it on a USB stick.
 
 
 ## Step 3: Install
 
-SSH into the Pi (same password you set when flashing the card):
+Run the installer:
 
 ```
-ssh pi@<pi-hostname>.local
-```
-
-Then run the installer:
-
-```
-cd MiLa-Test-Rig
+cd mila-test-rig-deploy
 sudo bash install.sh
 ```
 
@@ -214,22 +214,27 @@ sudo /opt/usb_audio_test/usb_audio_test.py
 
 ## Calibrating the box
 
-The pass/fail limits are tuned relative to the reference mic, not to an
-absolute number, so they mostly hold up as the box, speaker, and reference
-mic age together -- but you should still calibrate any time you set up a new
-box, change the foam or speaker, swap the reference mic, or start testing a
-different product. No keyboard needed:
+Calibration learns what a good unit reads in this box, and every limit comes
+from that. Calibrate when you set up a new box, change the foam, speaker or
+reference mic, move the reference, or start testing a different product.
+
+Calibrate with more than one known-good unit if you have them. Units vary
+more than you would expect: two good ones measured 1.8x apart on
+high-frequency content, which is wider than the margin allows, so limits from
+a single unit can fail the next good unit that comes along. Run the first one
+normally, then hold the button again for each additional unit after running
+`--calibrate --add` (see below). No keyboard needed for the first one:
 
 1. Put a known-good mic in the box and close the lid. Wait for its plug-in
    test to finish.
 2. Hold the button for 2 seconds (the long hold is deliberate, so a bump or
    short press can't wipe your limits). Both LEDs light up once you have held
    long enough - let go then and calibration starts.
-3. It plays 5 sweeps, reads the known-good mic and the reference mic at the
-   same time, and writes new reference-relative limits to
-   `/opt/usb_audio_test/calibration.json` automatically -- along with a floor
-   on the reference itself, so a degraded reference trips a station error
-   instead of silently shifting every verdict.
+3. It plays 15 sweeps, reads the known-good mic and the reference mic at the
+   same time, and writes the new limits to
+   `/opt/usb_audio_test/calibration.json` automatically -- along with floors
+   on the reference itself, so a degraded or displaced reference trips a
+   station error instead of silently shifting every verdict.
 4. Watch the result:
    - 3 green blinks = calibration saved
    - Flashing red (no beep) = calibration failed (bad readings, no unit in
@@ -241,6 +246,27 @@ You can also run it over SSH instead of using the button:
    ```
    sudo /opt/usb_audio_test/usb_audio_test.py --calibrate
    ```
+
+To fold another known-good unit into the same limits, seat it and run:
+
+   ```
+   sudo /opt/usb_audio_test/usb_audio_test.py --calibrate --add
+   ```
+
+That pools its sweeps with the ones already stored, so the limits cover the
+spread across your units instead of one sample. Only ever add units you are
+sure are good: a defective one folded in teaches the station to accept that
+defect.
+
+If a limit needs re-deriving without recording anything, for instance after a
+software update changes how a floor is worked out:
+
+   ```
+   sudo /opt/usb_audio_test/usb_audio_test.py --recompute
+   ```
+
+That reuses the sweeps already stored, so it is safe to run with any unit in
+the box, including a bad one.
 
 From then on the test uses those limits. The calibration file is not touched by
 reinstalling, so your settings stick. To go back to the built-in defaults, just
@@ -279,12 +305,20 @@ detected," and "a real fail" apart without being in the room.
 
 ## Troubleshooting
 
-- Flashing red LED, no beep (station error): the last run hit a rig problem,
-  not a mic verdict -- most commonly the reference mic is not detected, there
-  is no playback card, or a crash. It clears as soon as the next test or
-  calibration runs. Check `arecord -l` for the expected cards, and see "Open
-  bench items" below if the reference mic will not show up. Details are in
-  the log (`sudo journalctl -u usb-audio-test -f`).
+- Flashing red LED, no beep (station error): not a verdict on the unit.
+  **Check the unit is seated properly first.** A misplaced unit drops what
+  the reference hears by more than 2x and reads exactly like a broken
+  reference; on the one real occurrence so far, seating was the answer. If
+  the seating is right, check the reference mic is in its pocket, flush and
+  facing the unit: a reference that is connected but knocked off-axis reads
+  about half its normal level and will trip this. Then check `arecord -l`
+  shows the expected cards. It clears as soon as the next test runs. Details
+  are in the log (`sudo journalctl -u usb-audio-test -f`).
+- "the unit is producing sound but well under a good one ... weak speaker":
+  the unit's own speaker is under-driving. A real one with a disconnected
+  driver read about a third of a good unit.
+- "the unit's mic heard nothing ... dead mic": the reference heard the sweep
+  fine, so the speaker works and the mic is the fault.
 - "USB audio device not found": the unit is not plugged in or not seated.
   Reseat it and try again. Check `arecord -l` shows a `[USB...]` card for it.
 - Button does nothing: hold it the full 2 seconds, and check the wiring
@@ -292,33 +326,37 @@ detected," and "a real fail" apart without being in the room.
   (`sudo systemctl status usb-audio-test-button`).
 - Test always fails on known-good units (solid red + beep, not flashing): the
   box, reference mic, or mic model differs from the calibrated one. Run the
-  one-command calibration (see "Calibrating the box").
+  one-command calibration (see "Calibrating the box"). If only SOME good
+  units fail, the limits came from too narrow a sample -- add the failing
+  unit with `--calibrate --add` rather than recalibrating from scratch.
 - LEDs do not light at all: check the LED wiring (GPIO 17 green, GPIO 27 red)
   and that `python3-rpi.gpio` installed (the installer does this).
 - See the live log any time with `sudo journalctl -u usb-audio-test -f`.
 
 
-## Open bench items
+## Validated on the bench
 
-Called out here on purpose -- these are the parts of this rollout that can
-only be finished with hands on the actual station, not from a laptop:
+What has actually been confirmed on a real station, as opposed to reasoned
+about:
 
-- `PRODUCT_VIDPID` in `usb_audio_test.py` is still a placeholder. Run `lsusb`
-  on the station with a product unit plugged in, find its VID:PID, and set it
-  there -- until this is done the station can never recognize a unit as the
-  DUT (it will just sit idle).
-- The I2S overlay the installer writes to `config.txt`
-  (`dtoverlay=googlevoicehat-soundcard`) is a reasonable default, not a
-  confirmed one. After the first reboot, confirm `arecord -l` shows the
-  reference mic; if it does not, or the capture format looks wrong, edit the
-  clearly-marked block in `config.txt` (look for "MiLa reference mic
-  (INMP441 I2S)") and reboot again.
-- Pass/fail thresholds start from conservative built-in defaults and get
-  replaced the first time you calibrate (see "Calibrating the box"). Run
-  calibration against known-good units and, ideally, a few known-bad ones
-  (dead / weak / muffled / distorted) to confirm the limits catch what they
-  should before relying on the station for real.
+- Good units pass, and the limits transfer between units once more than one
+  good unit has been calibrated in.
+- A unit with a dead mic fails as a dead mic.
+- A unit with a disconnected speaker fails as a speaker fault, whether it is
+  silent or merely weak.
+- A disconnected or unpowered reference mic trips a station error rather than
+  passing units.
+- A misseated unit trips a station error rather than being failed.
 
+Not yet confirmed against real hardware, because no such unit has been
+available: the muffled check (no highs) and the distorted check (unclean
+waveform). Both paths exist and are covered by tests, but neither has caught
+a real defect. If you can sacrifice a spare -- tape over the mic port for
+muffled -- that is worth doing before trusting those two verdicts.
+
+Reference readings drift if the reference mic moves. Compare `ref_total` in
+the log against the values stored in `calibration.json` to tell a mic that
+went back in its pocket correctly from one that merely clears the floor.
 
 ## What gets installed
 
@@ -331,6 +369,7 @@ only be finished with hands on the actual station, not from a laptop:
 - `/etc/udev/rules.d/99-usb-audio-test.rules` - triggers the test on plug-in
 - `dtparam=i2s=on` and a reference-mic overlay block added to the boot config
   (`/boot/firmware/config.txt` on Bookworm, or `/boot/config.txt`) to enable
-  the reference mic -- see "Open bench items"
+  the reference mic
 - `/opt/usb_audio_test/calibration.json` - created when you run `--calibrate`,
-  holds the pass/fail limits for your box (delete it to use the built-in defaults)
+  holds the pass/fail limits for your box and the raw sweeps they came from
+  (delete it to use the built-in defaults)
