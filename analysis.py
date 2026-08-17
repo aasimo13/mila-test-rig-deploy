@@ -13,6 +13,12 @@ _COMB_SPACING_HZ = 25
 # cannot skip, high enough to still carry most of the sweep. Full-rate samples
 # do the actual precision work afterwards.
 _COARSE_SEARCH_HZ = 4000
+# attribute_silence only reads a unit's spectrum when its level is at least
+# this fraction of the calibrated floor. Below that the mic is deaf and its
+# high/low ratio is noise over noise, which has no bearing on the speaker.
+# Measured spread this sits between: a real speaker fault reads 0.62x the
+# floor, a real dead mic reads 0.000015x.
+_TILT_NEEDS_SIGNAL_FRACTION = 0.1
 
 def load_wav_float(path):
     try:
@@ -328,10 +334,20 @@ def attribute_silence(dut_bands, ref_bands, ref_match, floors):
         # against 0.095 for good units, while the reference only fell 1.6x,
         # well inside its floor. Without this the station called that unit a
         # dead mic every time.
+        #
+        # That tilt test needs SIGNAL to be meaningful. On a mic hearing
+        # nothing, high/low is the ratio of two noise figures, not a spectrum:
+        # a genuinely bad-mic unit measured 3.06e-11 (about 200,000x below a
+        # good unit, i.e. silence) with an apparent tilt of 3.307, which sailed
+        # past the ceiling and got it reported as a speaker fault. So below a
+        # small fraction of the calibrated floor, treat the unit as simply deaf
+        # and do not read anything into its spectrum. The real speaker-fault
+        # unit sits ~6x above that line, so the two never come close.
         max_tilt = floors.get("max_dut_tilt")
         low = dut_bands["low"]
         dut_tilt = (dut_bands["high"] / low) if low > 0 else 0.0
-        if max_tilt is not None and dut_tilt > max_tilt:
+        has_signal = dut_bands["total"] >= dut_floor * _TILT_NEEDS_SIGNAL_FRACTION
+        if has_signal and max_tilt is not None and dut_tilt > max_tilt:
             return "speaker", (f"the unit is quiet (total={dut_bands['total']:.3e}) and has "
                                f"lost its low end (tilt={dut_tilt:.3f} vs a ceiling of "
                                f"{max_tilt:.3f}) -- speaker/driver fault, not the mic")
