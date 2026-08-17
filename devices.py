@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """ALSA card discovery + USB VID/PID identification for the MiLa rig.
-Copyright (c) 2026 KRUU US INC. All rights reserved."""
+Aaron Simo, with Claude (Anthropic). Copyright (c) 2026 KRUU US INC. All rights reserved."""
 import os, subprocess
 
 def _cards(tool, run):

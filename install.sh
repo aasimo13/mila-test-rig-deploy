@@ -1,6 +1,6 @@
 #!/bin/bash
 # USB audio card test installer. Run on the Pi: sudo bash install.sh
-# MiLa Test Rig - Author: Aaron Simo - Copyright (c) 2026 KRUU US INC. All rights reserved.
+# MiLa Test Rig - Aaron Simo, with Claude (Anthropic) - Copyright (c) 2026 KRUU US INC. All rights reserved.
 
 set -e
 

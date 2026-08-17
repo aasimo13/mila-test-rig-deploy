@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Pure DSP + decision core for the MiLa test rig. No hardware/IO side effects.
-Copyright (c) 2026 KRUU US INC. All rights reserved."""
+Aaron Simo, with Claude (Anthropic). Copyright (c) 2026 KRUU US INC. All rights reserved."""
 import math, wave, array
 
 SWEEP_START_HZ = 300
@@ -107,24 +107,13 @@ def _corr_at_onset(samples, template, onset, length):
     return num / math.sqrt(den_a*den_b)
 
 def find_sweep_onset(samples, rate, expected_sec, sweep_dur, search_sec=0.10):
-    # Locate the chirp by CORRELATION, not by an energy threshold. The reference
-    # MEMS mic has a high broadband noise floor and the exponential chirp opens
-    # quietly at 300 Hz, so an energy-rise detector locks onto early noise
-    # (bench, kruu-mictest-01: it picked 0.17s instead of the true 0.30s and the
-    # match there was ~0, which read as a false STATION_ERROR). Sliding the ideal
-    # template across the search window and taking the onset of maximum
-    # normalized correlation ignores noise and finds the true start even when it
-    # is buried.
+    # Correlation, not an energy threshold. The reference has a high broadband
+    # noise floor and the chirp opens quietly at 300Hz, so an energy-rise
+    # detector locks onto noise instead of the chirp.
     #
-    # Coarse step tightened from ~5ms to ~1ms on 2026-08-07: a chirp's
-    # autocorrelation peak is only ~1-2ms wide (this is the whole reason chirps
-    # are used for radar pulse compression -- a sharp peak is the point), so a
-    # 5ms coarse grid could straddle it entirely and anchor several ms off the
-    # true onset. That mattered because it was eating into waveform_match's own
-    # search margin below: see that function's comment for the concrete case
-    # this caused. Verified against 6 real captures (kruu-mictest-01) that 1ms
-    # already lands within ~2-10ms of the true onset every time, well inside
-    # the margin waveform_match needs.
+    # 1ms coarse step, not 5ms: the correlation peak is 1-2ms wide and a
+    # coarser grid straddles it, anchoring several ms off and eating into
+    # waveform_match's lag budget.
     length = int(rate*sweep_dur)
     if length <= 0 or not samples:
         return int(rate*expected_sec)
@@ -172,25 +161,10 @@ def _lagged_corr(window, template, length, lag):
     return num / math.sqrt(den_a*den_b)
 
 def waveform_match(samples, rate, onset, sweep_dur):
-    # The lag search absorbs find_sweep_onset's error, and that error goes BOTH
-    # ways, so the range is symmetric. It used to be -5ms..+30ms, sized for the
-    # old energy-rise detector, which only ever reported early (its forward
-    # window registered a rise as soon as it began overlapping the chirp). The
-    # correlation detector that replaced it misses in either direction: on the
-    # bench (kruu-mictest-01, OLD enclosure print) it once reported 0.330s for
-    # a chirp starting at 0.300s, and a lag range that could not reach 30 ms
-    # back scored that capture 0.002 where the same recording scored 0.438 at
-    # the true onset -- widened to +-30ms symmetric to fix that.
-    #
-    # Halved to +-15ms on 2026-08-07 after the enclosure was reprinted and the
-    # reference reseated: a 20-rep brute-force ground-truth scan (well beyond
-    # either window, no coarse-to-fine shortcuts) on the new print found onset
-    # deviation a tight, systematic +5..+10ms with zero outliers -- 15ms is
-    # already a ~1.5x margin over that. This is a deliberate, data-backed
-    # trade of margin for speed (each ms here costs real per-sweep time, see
-    # usb_audio_test.ONSET_SEARCH_SEC), not a re-derivation of a hard bound.
-    # If a wide miss like the one above recurs on THIS print, re-widen rather
-    # than assume the 30ms case was print-specific and gone for good.
+    # Absorbs find_sweep_onset's error, which goes both ways, so the range is
+    # symmetric. +-15ms is ~1.5x the worst onset deviation measured on the
+    # current enclosure (+5..+10ms over 20 reps). Each ms costs per-sweep time;
+    # widen it again if a capture ever misses by more than that.
     length = int(rate*sweep_dur)
     window = gated(samples, onset, length)
     template = generate_chirp_float(SWEEP_START_HZ, SWEEP_END_HZ, sweep_dur, rate)
@@ -199,25 +173,13 @@ def waveform_match(samples, rate, onset, sweep_dur):
     max_lag = int(rate*0.015)
     min_lag = -max_lag
 
-    # MULTIRATE SEARCH. A chirp's autocorrelation peak is roughly 1/bandwidth
-    # wide -- here ~1/3700Hz, under half a millisecond. That sharpness is why
-    # chirps are used for radar pulse compression, and it is also a trap for a
-    # coarse-to-fine search: on 2026-08-07 the then-shipped 1ms grid was found
-    # to straddle the peak entirely (both samples land on its near-zero
-    # shoulders), lock onto an unrelated noise spike elsewhere in range, and
-    # never recover -- the fine stage only refines +-1 coarse step around that
-    # wrong anchor. Proved on 6 real captures (kruu-mictest-01): 3 scored
-    # 0.131-0.137 while an exhaustive sample-exact search over the IDENTICAL
-    # +-15ms range found 0.433-0.439 in all 6. It caused the reference to read
-    # "unhealthy" on ~33% of sweeps and the DUT's match to flip between ~0.06
-    # and ~0.63 on nominally identical sweeps.
-    #
-    # Scanning the whole range fine enough to guarantee a hit works but is
-    # expensive (it doubled run time). Instead, exploit the same physics that
-    # caused the problem: peak width is inversely proportional to bandwidth,
-    # so a heavily decimated (narrow-band) copy has a WIDE, easy-to-find peak.
-    # Locate the neighbourhood there cheaply, then refine at full rate over a
-    # window around it. Same answer, ~3x less work.
+    # The chirp's correlation peak is about 1/bandwidth wide, under half a
+    # millisecond, so a coarse grid can straddle it entirely and lock onto
+    # noise instead. Peak width scales inversely with bandwidth, so find the
+    # neighbourhood on a heavily decimated copy where the peak is wide, then
+    # refine at full rate. Same answer as scanning everything finely, ~3x less
+    # work. Do not coarsen the fine step: skipping the peak scored real
+    # captures 0.13 that an exhaustive search scored 0.43.
     dec = max(1, rate // _COARSE_SEARCH_HZ)
     if dec > 1:
         dwindow, drate = decimate(window, rate, dec)
@@ -319,17 +281,11 @@ def attribute_silence(dut_bands, ref_bands, ref_match, floors):
     if ref_heard:
         if dut_heard:
             return "ok", "ok"
-        # The unit is quiet while the reference heard the chirp cleanly, so
-        # the speaker demonstrably works and the mic is what failed.
-        #
-        # An earlier version tried to spot a lost speaker driver here, from
-        # the unit's own high/low tilt. That was tuned to a single measurement
-        # of the lost-driver unit (tilt 0.42) and broke on the very next
-        # insertion of the SAME unit (0.111) -- a dangling speaker wire does
-        # not sit the same way twice. The reference's LEVEL is the stable
-        # signal: it held to 1.13x across those two insertions and sits 1.6x
-        # below the quietest good unit, so a weak speaker is caught by
-        # ref_heard above rather than inferred from the unit's spectrum.
+        # Reference heard it, so the speaker works and the mic is what failed.
+        # A weak speaker is caught by ref_heard above, from the reference's
+        # level. Do not try to infer it from the unit's own spectrum instead:
+        # the same faulty unit measured tilt 0.42 and 0.111 on consecutive
+        # insertions, while its reference level held to 1.13x.
         return "mic", (f"the unit's mic heard nothing (total={dut_bands['total']:.3e}) "
                        f"while the reference heard the chirp -- dead mic")
     if dut_heard:
@@ -353,13 +309,13 @@ def evaluate_dut(score, dut_peak_float, thresholds):
     if dut_peak_float >= thresholds["max_peak"]:
         reasons.append(f"clipping (peak={dut_peak_float:.2f})")
     if score["level"] < thresholds["min_level"]:
-        reasons.append(f"level too low ({score['level']:.3e}) — dead/weak")
+        reasons.append(f"level too low ({score['level']:.3e}), dead or weak")
     if score["level"] > thresholds["max_level"]:
         reasons.append(f"level too high ({score['level']:.3e})")
     if score["tilt"] < thresholds["min_tilt"]:
-        reasons.append(f"no highs (tilt={score['tilt']:.3f}) — muffled")
+        reasons.append(f"no highs (tilt={score['tilt']:.3f}), muffled")
     if score["match"] < thresholds["min_match"]:
-        reasons.append(f"waveform unclean (match={score['match']:.2f}) — distorted")
+        reasons.append(f"waveform unclean (match={score['match']:.2f}), distorted")
     return (len(reasons) == 0), reasons
 
 def default_thresholds():

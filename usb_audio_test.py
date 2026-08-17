@@ -4,7 +4,7 @@ USB audio card test.
 Plays a frequency sweep out the card and records it back to check the mic.
 
 MiLa Test Rig
-Author: Aaron Simo
+Aaron Simo, with Claude (Anthropic)
 Copyright (c) 2026 KRUU US INC. All rights reserved.
 """
 
@@ -56,17 +56,9 @@ PRODUCT_VIDPID = "0c76:1203"
 # recording, regardless of the two cards' sample rates.
 RECORD_HEAD_START = 0.3
 REFERENCE_EXPECTED_SEC = RECORD_HEAD_START
-# find_sweep_onset's search window, passed explicitly (rather than relying on
-# its default) so record_duration below is DERIVED from the same number it
-# actually needs -- a hardcoded tail here could silently stop covering the
-# real search window if that default ever changed elsewhere.
-#
-# Halved from 0.10 on 2026-08-07, same bench pass and same reasoning as
-# waveform_match's lag window in analysis.py (see its comment): a 20-rep
-# ground-truth scan on the reprinted enclosure found onset deviation a tight
-# +5..+10ms, so 0.05 keeps real margin over that while halving this search's
-# own cost. Keep this coupled to analysis.py's window -- narrow one without
-# the other and a wide miss recovers in one function but not the other.
+# Passed explicitly so record_duration below is derived from the same number.
+# Keep it in step with waveform_match's lag window in analysis.py: narrowing
+# one without the other leaves a wide miss recoverable in only one of them.
 ONSET_SEARCH_SEC = 0.05
 # Nothing downstream reads past onset+SWEEP_DURATION_SEC+ONSET_SEARCH_SEC --
 # gated() only ever extracts exactly rate*sweep_dur samples from the detected
@@ -93,18 +85,11 @@ SPEAKER_VALUE = "688"
 REF_CAPTURE_CONTROL = None
 REF_CAPTURE_VALUE = None
 
-# --calibrate fires N_CAL dual-capture sweeps against a known-good mic seated
-# as the DUT and derives reference-relative thresholds from them
-# (analysis.compute_calibration) -- see run_calibration(). analysis.
-# compute_calibration takes min()/max() over the score list and divides by
-# these margins, which raises on empty input (Task 4 note), so run_calibration
-# never calls it below CAL_MIN_GOOD_SWEEPS successful sweeps.
-# Calibrate at the seated position. An earlier enclosure left a gap between
-# the reference and the unit, and seating then moved the score enough
-# (hf swung 4.9x) that calibration had to sample positions to mean anything --
-# which in turn taught it to accept badly seated units. With the gap removed
-# (2026-08-14) a reseat moves level_ratio ~2%, so repeats at one good seating
-# are what the thresholds should come from; CAL_MARGINS covers the rest.
+# --calibrate runs N_CAL sweeps against a known-good unit and derives the
+# thresholds from them. Calibrate at the seated position and leave the unit
+# alone: a reseat moves the score about 2%, which the margins cover. Use
+# --calibrate --add to fold in more good units; one unit's spread does not
+# cover the next one's.
 N_CAL = 15
 CAL_MIN_GOOD_SWEEPS = 3
 # Discard this fraction of the extremes at each end before taking the
@@ -114,52 +99,24 @@ CAL_MIN_GOOD_SWEEPS = 3
 # pass. See analysis.compute_calibration.
 CAL_TRIM_FRAC = 0.15
 CAL_MARGINS = {"level": 0.6, "hf": 0.6, "match": 0.8}
-# ref_floors.min_total = min(observed ref total) * this.
-#
-# This floor is what separates a weak speaker from a dead mic, so it has to sit
-# between two measured populations that are only 1.56x apart:
-#   quietest good reading ever seen   1.42e-05  (one unit, on a later session
-#                                                than its own calibration)
-#   loudest lost-driver reading       9.10e-06
-# 0.6 against a pooled minimum of 1.85e-05 puts it at ~1.11e-05, which is
-# 1.28x under the worst good reading and 1.22x over the best bad one.
-#
-# 0.8 was tried first and was wrong: it landed at 1.48e-05, ABOVE that
-# quietest good reading, so a known-good unit would have been failed as a
-# speaker fault. Note the pool minimum alone did not reveal that -- good
-# units read lower in some sessions than during their own calibration, so
-# widen this rather than tighten it if false speaker verdicts show up.
+# min_total = min(observed reference total) * this. Separates a weak speaker
+# from a dead mic, and the two populations are only 1.56x apart: the quietest
+# good reading seen is 1.42e-05, the loudest lost-driver reading 9.1e-06. 0.6
+# lands between them. 0.8 was tried and failed a known-good unit as a speaker
+# fault, so widen this rather than tighten it if that shows up.
 CAL_REF_FLOOR_FRACTION = 0.6
-# The unit's own mic floor stays generous: it only has to catch a mic that is
-# genuinely deaf (the real one reads 2.5e-11 against ~6.4e-06 for a good unit,
-# five orders of magnitude down), and the level gate below does the finer work.
+# The unit's own mic floor only has to catch a genuinely deaf mic (2.5e-11
+# against ~6.4e-06 good). The level gate does the finer work.
 CAL_DUT_FLOOR_FRACTION = 0.3
-# ref_floors.min_match, also the pre-calibration reference-health gate. Bench
-# (kruu-mictest-01): a healthy reference matches the template at only ~0.40 --
-# the chirp reverberates in the small box, so raw-waveform correlation can't
-# reach the ~1.0 of the synthetic fixtures. 0.5 falsely rejected a good
-# reference AND blocked calibration (which gates on this). 0.25 sits below the
-# real healthy value with margin while still tripping on a dead/silent
-# reference (match ~0).
+# A healthy reference matches the template at only ~0.40, not the ~1.0 the
+# synthetic fixtures reach, because the chirp reverberates in the box. 0.5
+# rejected good references and blocked calibration.
 CAL_REF_MIN_MATCH = 0.25
 CALIBRATION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "calibration.json")
 
-# load_thresholds() falls back to these ONLY before the station has ever been
-# calibrated (no calibration.json yet, or it's unreadable/corrupt); once
-# --calibrate has run, the real floors persisted there (median observed
-# reference total * CAL_REF_FLOOR_FRACTION) are used instead and this constant
-# is no longer consulted. This is only a PRE-CALIBRATION gate: it must be loose
-# enough that a healthy reference passes so calibration can run, yet still trip
-# on a truly dead/near-silent reference. The waveform-match gate (min_match)
-# does the real "did we hear the actual chirp" discrimination; min_total just
-# guards against total silence.
-# BENCH-MEASURED (kruu-mictest-01, INMP441 across the box from the DUT speaker):
-# a healthy reference on a known-good DUT reads total ~= 8e-7 via
-# analysis.recording_bands. The original synthetic 1e-6 placeholder sat ABOVE
-# that and false-flagged a working reference as "no chirp" -- and blocked
-# calibration itself (which gates each sweep on this same constant). Set an
-# order of magnitude below the measured healthy level; calibration replaces it
-# with a median-derived floor anyway.
+# Used only before a station has ever been calibrated. It has to be loose
+# enough that a healthy reference passes so calibration can run at all, and
+# only needs to trip on true silence. min_match does the real work.
 UNCALIBRATED_REF_FLOORS = {"min_total": 1e-7, "min_match": CAL_REF_MIN_MATCH,
                            # same order-of-magnitude reasoning as min_total, for the
                            # unit's own mic: loose enough that any real recording clears
@@ -348,14 +305,9 @@ def play_and_record_dual(play_card, dut_card, ref_card, ref_kind, chirp_path, du
     REFERENCE_EXPECTED_SEC independently in each -- the two cards need not
     share a sample rate). Kills all three processes and returns False on
     timeout or any non-zero exit (e.g. a unit pulled mid-test)."""
-    # Window = head start + the sweep + the onset detector's own forward
-    # search margin (the latest moment the chirp could still legitimately
-    # start) + a small IO/process-jitter pad, rounded up to whole seconds for
-    # arecord -d. This used to be a flat 3s (a hardcoded "~1.5s settle
-    # margin" on top, far more than analysis ever reads); kruu-mictest-01
-    # measured capture as the single largest cost in a run (9.4s of ~33s)
-    # once the reference-decimation fix cut analysis time, so the excess
-    # here was no longer negligible.
+    # Head start + sweep + the onset detector's forward search margin + a pad
+    # for IO jitter, rounded up because arecord -d takes whole seconds.
+    # Nothing downstream reads past that, so anything more is wasted capture.
     record_duration = math.ceil(RECORD_HEAD_START + SWEEP_DURATION_SEC
                                 + ONSET_SEARCH_SEC + RECORD_TAIL_MARGIN_SEC)
 
@@ -569,7 +521,7 @@ def run_calibration(cards, add=False):
     for i, sweep in enumerate(sweeps):
         ok, reason = analysis.reference_healthy(sweep["ref_bands"], sweep["ref_match"], UNCALIBRATED_REF_FLOORS)
         if not ok:
-            log(f"calibration sweep rejected: reference unhealthy — {reason}")
+            log(f"calibration sweep rejected, reference unhealthy: {reason}")
             continue
         score = analysis.score_dut(sweep["dut_bands"], sweep["dut_match"])
         scores.append(score)
@@ -631,12 +583,9 @@ def analyze_sweep_files(paths):
         log("DUT or reference recording unreadable/empty")
         return None
 
-    # The I2S reference records at 48kHz for fidelity, but every analysis call
-    # below is O(n) pure Python -- kruu-mictest-01 measured one sweep's
-    # analysis at 18.88s, most of it the 48kHz reference (waveform_match alone
-    # was 9.91s vs 1.99s for the 16kHz DUT), which is what made a 3-sweep run
-    # take ~66s. The chirp tops out at SWEEP_END_HZ (4kHz), far under a 16kHz
-    # Nyquist, so decimating buys ~3x with no loss to what's being measured.
+    # The reference records at 48kHz for fidelity, but the analysis below is
+    # O(n) pure Python and the chirp tops out at SWEEP_END_HZ. Decimating to
+    # the DUT's rate costs nothing measurable and saves ~3x the work.
     if ref_rate > SAMPLE_RATE and ref_rate % SAMPLE_RATE == 0:
         ref_samples, ref_rate = analysis.decimate(ref_samples, ref_rate, ref_rate // SAMPLE_RATE)
 

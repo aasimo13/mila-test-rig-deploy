@@ -7,7 +7,7 @@
 
 # MiLa Test Rig — USB Mic Test (KRUU US)
 
-Author: Aaron Simo · Copyright © 2026 KRUU US INC. All rights reserved.
+Aaron Simo, with Claude (Anthropic) · Copyright © 2026 KRUU US INC. All rights reserved.
 
 Automated pass/fail test for the USB mic units. The unit goes in the
 sound-dampened box with the Raspberry Pi, next to a fixed reference
