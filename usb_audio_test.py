@@ -114,7 +114,26 @@ CAL_MIN_GOOD_SWEEPS = 3
 # pass. See analysis.compute_calibration.
 CAL_TRIM_FRAC = 0.15
 CAL_MARGINS = {"level": 0.6, "hf": 0.6, "match": 0.8}
-CAL_REF_FLOOR_FRACTION = 0.3   # ref_floors.min_total = median(observed ref total) * this
+# ref_floors.min_total = min(observed ref total) * this.
+#
+# This floor is what separates a weak speaker from a dead mic, so it has to sit
+# between two measured populations that are only 1.56x apart:
+#   quietest good reading ever seen   1.42e-05  (one unit, on a later session
+#                                                than its own calibration)
+#   loudest lost-driver reading       9.10e-06
+# 0.6 against a pooled minimum of 1.85e-05 puts it at ~1.11e-05, which is
+# 1.28x under the worst good reading and 1.22x over the best bad one.
+#
+# 0.8 was tried first and was wrong: it landed at 1.48e-05, ABOVE that
+# quietest good reading, so a known-good unit would have been failed as a
+# speaker fault. Note the pool minimum alone did not reveal that -- good
+# units read lower in some sessions than during their own calibration, so
+# widen this rather than tighten it if false speaker verdicts show up.
+CAL_REF_FLOOR_FRACTION = 0.6
+# The unit's own mic floor stays generous: it only has to catch a mic that is
+# genuinely deaf (the real one reads 2.5e-11 against ~6.4e-06 for a good unit,
+# five orders of magnitude down), and the level gate below does the finer work.
+CAL_DUT_FLOOR_FRACTION = 0.3
 # ref_floors.min_match, also the pre-calibration reference-health gate. Bench
 # (kruu-mictest-01): a healthy reference matches the template at only ~0.40 --
 # the chirp reverberates in the small box, so raw-waveform correlation can't
@@ -141,9 +160,6 @@ CALIBRATION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cal
 # calibration itself (which gates each sweep on this same constant). Set an
 # order of magnitude below the measured healthy level; calibration replaces it
 # with a median-derived floor anyway.
-# max_dut_tilt is deliberately absent here: without calibration there is no
-# idea what a good unit's spectrum looks like, and attribute_silence falls back
-# to reporting a quiet unit as a mic fault rather than guessing at the speaker.
 UNCALIBRATED_REF_FLOORS = {"min_total": 1e-7, "min_match": CAL_REF_MIN_MATCH,
                            # same order-of-magnitude reasoning as min_total, for the
                            # unit's own mic: loose enough that any real recording clears
@@ -427,6 +443,80 @@ def _load_calibration_pool():
         return None
 
 
+def _derive_and_save(scores, ref_totals, ref_matches, dut_totals):
+    """Derive thresholds from a pool of good-unit sweeps and persist them.
+
+    Split out so the thresholds can be recomputed from an existing pool
+    without recording anything -- which is what you want when a constant
+    changes, and the only safe option when the unit sitting in the box is
+    a known-bad one."""
+    thresholds = analysis.compute_calibration(scores, CAL_MARGINS, trim=CAL_TRIM_FRAC)
+    ref_total_med = statistics.median(ref_totals)
+    ref_floors = {
+        # From the QUIETEST good unit seen, not the median. This floor is what
+        # separates a weak speaker from a dead mic: the lost-driver unit reads
+        # 8.1e-06 where the quietest good unit reads 1.45e-05, so a floor
+        # derived from the median (and a 0.3 fraction) sat at 5e-06 and waved
+        # the bad speaker straight through as "the reference heard it fine".
+        "min_total": min(ref_totals) * CAL_REF_FLOOR_FRACTION,
+        "min_match": CAL_REF_MIN_MATCH,
+        # Absolute "did the unit's mic hear anything at all" floor. Separate
+        # from min_level (a ratio): when the reference is silent the ratio
+        # means nothing, so attributing a dead speaker vs a deaf rig needs an
+        # absolute reading from the unit's own mic.
+        "min_dut_total": statistics.median(dut_totals) * CAL_DUT_FLOOR_FRACTION,
+    }
+    data = {
+        "thresholds": thresholds,
+        "ref_floors": ref_floors,
+        "observed": {
+            "ref_total": {"median": ref_total_med, "min": min(ref_totals), "max": max(ref_totals)},
+            "ref_match": {"median": statistics.median(ref_matches),
+                          "min": min(ref_matches), "max": max(ref_matches)},
+        },
+        "samples": len(scores),
+        # The raw pool, so `--calibrate --add` can fold in another known-good
+        # unit rather than starting over. Unit-to-unit spread is real: two good
+        # units measured 1.68x apart on tilt, which is wider than the margin,
+        # so thresholds from a single unit do not reliably cover the next one.
+        "pool": {
+            "scores": scores,
+            "ref_totals": ref_totals,
+            "ref_matches": ref_matches,
+            "dut_totals": dut_totals,
+        },
+    }
+
+    try:
+        with open(CALIBRATION_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except OSError as e:
+        log(f"Calibration FAILED: could not write {CALIBRATION_FILE}: {e}")
+        return False
+
+    log("=== CALIBRATION SAVED ===")
+    log(f"  thresholds: {thresholds}")
+    log(f"  ref_floors: {ref_floors}")
+    log(f"  ({len(scores)} samples) written to {CALIBRATION_FILE}")
+    return True
+
+
+def recompute_calibration():
+    """Re-derive thresholds from the stored pool, recording nothing.
+
+    Constants that shape the floors (CAL_REF_FLOOR_FRACTION and friends) get
+    revised as bench data accumulates, and the pool of good sweeps is already
+    on disk -- so there is no reason to make someone re-run 45 sweeps, and no
+    reason to need a good unit in the box to do it."""
+    pool = _load_calibration_pool()
+    if pool is None:
+        log("Nothing to recompute: no usable calibration.json with a stored pool.")
+        return False
+    scores, ref_totals, ref_matches, dut_totals = pool
+    log(f"Recomputing thresholds from {len(scores)} stored sweeps (no recording).")
+    return _derive_and_save(scores, ref_totals, ref_matches, dut_totals)
+
+
 def run_calibration(cards, add=False):
     """Fire N_CAL dual-capture sweeps against a known-good mic seated as the
     DUT, score each against the reference (analysis.score_dut), and persist
@@ -476,7 +566,6 @@ def run_calibration(cards, add=False):
     ref_totals = []
     ref_matches = []
     dut_totals = []
-    dut_tilts = []
     for i, sweep in enumerate(sweeps):
         ok, reason = analysis.reference_healthy(sweep["ref_bands"], sweep["ref_match"], UNCALIBRATED_REF_FLOORS)
         if not ok:
@@ -487,12 +576,10 @@ def run_calibration(cards, add=False):
         ref_totals.append(sweep["ref_bands"]["total"])
         ref_matches.append(sweep["ref_match"])
         dut_totals.append(sweep["dut_bands"]["total"])
-        dut_tilts.append(score["tilt"])
         log(f"  sweep {i + 1}/{len(sweeps)}: level={score['level']:.3e} "
             f"tilt={score['tilt']:.3f} match={score['match']:.2f} "
             f"ref_total={sweep['ref_bands']['total']:.3e}")
 
-    dut_tilts = [sc["tilt"] for sc in prior_scores] + dut_tilts
     scores = prior_scores + scores
     ref_totals = prior_ref_totals + ref_totals
     ref_matches = prior_ref_matches + ref_matches
@@ -506,56 +593,7 @@ def run_calibration(cards, add=False):
             f"and the reference healthy?")
         return False
 
-    thresholds = analysis.compute_calibration(scores, CAL_MARGINS, trim=CAL_TRIM_FRAC)
-    ref_total_med = statistics.median(ref_totals)
-    ref_floors = {
-        "min_total": ref_total_med * CAL_REF_FLOOR_FRACTION,
-        "min_match": CAL_REF_MIN_MATCH,
-        # Absolute "did the unit's mic hear anything at all" floor. Separate
-        # from min_level (a ratio): when the reference is silent the ratio
-        # means nothing, so attributing a dead speaker vs a deaf rig needs an
-        # absolute reading from the unit's own mic.
-        "min_dut_total": statistics.median(dut_totals) * CAL_REF_FLOOR_FRACTION,
-        # Ceiling on the unit's own high/low tilt. A unit that has lost a
-        # speaker driver goes quiet AND loses its low end, so its tilt lands
-        # far above a good unit's -- that is what separates it from a plain
-        # dead mic, which just goes quiet. Derived from the good units seen
-        # during calibration, with the same margin as the other gates.
-        "max_dut_tilt": max(dut_tilts) / CAL_MARGINS["hf"],
-    }
-    data = {
-        "thresholds": thresholds,
-        "ref_floors": ref_floors,
-        "observed": {
-            "ref_total": {"median": ref_total_med, "min": min(ref_totals), "max": max(ref_totals)},
-            "ref_match": {"median": statistics.median(ref_matches),
-                          "min": min(ref_matches), "max": max(ref_matches)},
-        },
-        "samples": len(scores),
-        # The raw pool, so `--calibrate --add` can fold in another known-good
-        # unit rather than starting over. Unit-to-unit spread is real: two good
-        # units measured 1.68x apart on tilt, which is wider than the margin,
-        # so thresholds from a single unit do not reliably cover the next one.
-        "pool": {
-            "scores": scores,
-            "ref_totals": ref_totals,
-            "ref_matches": ref_matches,
-            "dut_totals": dut_totals,
-        },
-    }
-
-    try:
-        with open(CALIBRATION_FILE, "w") as f:
-            json.dump(data, f, indent=2)
-    except OSError as e:
-        log(f"Calibration FAILED: could not write {CALIBRATION_FILE}: {e}")
-        return False
-
-    log("=== CALIBRATION SAVED ===")
-    log(f"  thresholds: {thresholds}")
-    log(f"  ref_floors: {ref_floors}")
-    log(f"  ({len(scores)} samples) written to {CALIBRATION_FILE}")
-    return True
+    return _derive_and_save(scores, ref_totals, ref_matches, dut_totals)
 
 
 def play_result(card, passed):
@@ -986,6 +1024,8 @@ def main():
 if __name__ == "__main__":
     if "--button-daemon" in sys.argv:
         sys.exit(run_button_daemon())
+    if "--recompute" in sys.argv:
+        sys.exit(0 if recompute_calibration() else 2)
     if "--selftest" in sys.argv:
         sys.exit(run_selftest())
     code = main()
