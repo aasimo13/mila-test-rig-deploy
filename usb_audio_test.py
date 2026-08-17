@@ -417,6 +417,11 @@ def _derive_and_save(scores, ref_totals, ref_matches, dut_totals):
         # means nothing, so attributing a dead speaker vs a deaf rig needs an
         # absolute reading from the unit's own mic.
         "min_dut_total": statistics.median(dut_totals) * CAL_DUT_FLOOR_FRACTION,
+        # What a healthy unit reads. Used to tell a weak speaker (producing,
+        # but well under this) from a rig fault or a misseated unit (which
+        # both still read normally, because the unit's mic is a fixed distance
+        # from its own speaker).
+        "min_dut_normal": thresholds["min_level"],
     }
     data = {
         "thresholds": thresholds,

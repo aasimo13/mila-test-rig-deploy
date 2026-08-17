@@ -289,12 +289,22 @@ def attribute_silence(dut_bands, ref_bands, ref_match, floors):
         return "mic", (f"the unit's mic heard nothing (total={dut_bands['total']:.3e}) "
                        f"while the reference heard the chirp -- dead mic")
     if dut_heard:
-        # Seating first, hardware second. The unit's own mic sits a fixed
-        # distance from its own speaker so it reads normally wherever the unit
-        # is, but the reference does not, and a misplaced unit drops what the
-        # reference hears by more than 2x. That looks identical to a failed
-        # reference from levels alone, and on the one real occurrence so far
-        # it WAS the seating.
+        # The reference did not hear it but the unit did. Whether that is the
+        # rig's fault turns on how MUCH the unit heard. Its mic sits a fixed
+        # distance from its own speaker, so a working speaker gives a normal
+        # reading wherever the unit sits; a low-but-present one means the unit
+        # is under-producing and the fault is its speaker. The lost-driver unit
+        # read 2.12e-06 against 6.65e-06 for a misseated good one.
+        normal = floors.get("min_dut_normal")
+        if normal is not None and dut_bands["total"] < normal:
+            return "speaker", (f"the unit is producing sound but well under a good one "
+                               f"(total={dut_bands['total']:.3e}, expected at least "
+                               f"{normal:.3e}) and the reference barely heard it "
+                               f"(total={ref_bands['total']:.3e}) -- weak speaker")
+        # Seating first, hardware second. A misplaced unit drops what the
+        # reference hears by more than 2x, which looks identical to a failed
+        # reference from levels alone, and on the one real occurrence it WAS
+        # the seating.
         return "rig", (f"the reference heard no clean chirp (total={ref_bands['total']:.3e}, "
                        f"match={ref_match:.2f}) but the unit's own mic did. "
                        f"Check the unit is seated properly first, then the reference mic. "
