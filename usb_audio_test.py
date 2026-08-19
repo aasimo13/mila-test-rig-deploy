@@ -90,7 +90,12 @@ REF_CAPTURE_VALUE = None
 # alone: a reseat moves the score about 2%, which the margins cover. Use
 # --calibrate --add to fold in more good units; one unit's spread does not
 # cover the next one's.
-N_CAL = 15
+# 8 sweeps, not 15. 15 dates from an enclosure that let the unit move, when
+# calibration had to sample positions to mean anything. The current box holds
+# it to about 2% and a run's sweeps agree to ~1.05x, so the extra sweeps were
+# re-measuring a known number for another 40 seconds. 8 still leaves trim a
+# sweep to discard at each end, and --add pools across units anyway.
+N_CAL = 8
 CAL_MIN_GOOD_SWEEPS = 3
 # Discard this fraction of the extremes at each end before taking the
 # floor/ceiling. Sampling a range means some captures land mid-movement or at
@@ -171,6 +176,50 @@ def blink_green(times, on_sec=0.3, off_sec=0.3):
         time.sleep(on_sec)
         set_leds(False, False)
         time.sleep(off_sec)
+
+
+def signal_calibration_saved(play_card):
+    """Confirm a finished calibration loudly enough to notice.
+
+    Calibration runs for about 90 seconds, so whoever started it has usually
+    stopped watching by the time it lands. Three short green blinks were easy
+    to miss entirely, which reads as 'nothing happened'. This holds green solid
+    for a beat, then blinks it, and beeps -- so it carries whether you are
+    looking at the box or not.
+
+    Four beeps, deliberately not the two of a PASS or the three of a FAIL, so
+    it cannot be mistaken for a verdict on the unit sitting in the box."""
+    set_leds(True, False)
+    time.sleep(1.5)
+    blink_green(5, on_sec=0.15, off_sec=0.15)
+    set_leds(True, False)
+    try:
+        generate_result_tone(RESULT_TONE_FILE, PASS_BEEP_FREQ, 4, beep_duration=0.12,
+                             gap_duration=0.06)
+        subprocess.run(["aplay", "-D", f"plughw:{play_card},0", RESULT_TONE_FILE],
+                       timeout=10, capture_output=True)
+    except Exception:
+        pass
+    time.sleep(1.0)
+    set_leds(False, False)
+
+
+def signal_calibration_failed(play_card):
+    """Same idea for a failed calibration: red, and a low burst you can hear
+    from across the room. main() still flashes red afterwards until the next
+    run clears it."""
+    for _ in range(4):
+        set_leds(False, True)
+        time.sleep(0.15)
+        set_leds(False, False)
+        time.sleep(0.15)
+    try:
+        generate_result_tone(RESULT_TONE_FILE, FAIL_BEEP_FREQ, 4, beep_duration=0.12,
+                             gap_duration=0.06)
+        subprocess.run(["aplay", "-D", f"plughw:{play_card},0", RESULT_TONE_FILE],
+                       timeout=10, capture_output=True)
+    except Exception:
+        pass
 
 
 def blink_ready(times=3, on_sec=0.15, off_sec=0.15):
@@ -912,8 +961,10 @@ def main():
                 return 2
             lock_card_gains(cards["play"], cards["dut"], cards["ref"])
             if run_calibration(cards, add="--add" in sys.argv):
-                blink_green(3)
+                log("Calibration complete.")
+                signal_calibration_saved(cards["play"])
                 return 0
+            signal_calibration_failed(cards["play"])
             return 2
 
         cards = devices.select_cards(PRODUCT_VIDPID)
