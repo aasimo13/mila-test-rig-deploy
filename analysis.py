@@ -13,6 +13,12 @@ _COMB_SPACING_HZ = 25
 # cannot skip, high enough to still carry most of the sweep. Full-rate samples
 # do the actual precision work afterwards.
 _COARSE_SEARCH_HZ = 4000
+# find_sweep_onset sweeps a much wider window than waveform_match does, so its
+# coarse pass decimates harder still. It only has to land in the right
+# neighbourhood; the full-rate pass after it does the precision. Lower than
+# this and the decimated chirp has too little bandwidth left to correlate
+# against at all.
+_ONSET_COARSE_HZ = 2000
 
 def load_wav_float(path):
     try:
@@ -111,9 +117,12 @@ def find_sweep_onset(samples, rate, expected_sec, sweep_dur, search_sec=0.10):
     # noise floor and the chirp opens quietly at 300Hz, so an energy-rise
     # detector locks onto noise instead of the chirp.
     #
-    # 1ms coarse step, not 5ms: the correlation peak is 1-2ms wide and a
-    # coarser grid straddles it, anchoring several ms off and eating into
-    # waveform_match's lag budget.
+    # Multirate, for the same reason waveform_match is: the peak is 1-2ms wide,
+    # so a grid coarse enough to be cheap straddles it and anchors several ms
+    # off. Scanning the whole window fine enough to guarantee a hit works but
+    # cost 4.3s a channel, 71% of a sweep's analysis. Peak width scales
+    # inversely with bandwidth, so sweep a decimated copy where the peak is
+    # wide and cheap, then refine at full rate around what it found.
     length = int(rate*sweep_dur)
     if length <= 0 or not samples:
         return int(rate*expected_sec)
@@ -122,22 +131,39 @@ def find_sweep_onset(samples, rate, expected_sec, sweep_dur, search_sec=0.10):
     expected = int(rate*expected_sec)
     lo = max(0, expected - int(rate*search_sec))
     hi = min(max(lo, len(samples)-1), expected + int(rate*search_sec))
-    coarse = max(1, int(rate*0.001))
+
+    dec = max(1, rate // _ONSET_COARSE_HZ)
+    if dec > 1 and (hi - lo) > dec:
+        dsamples, drate = decimate(samples, rate, dec)
+        dtemplate, _ = decimate(template, rate, dec)
+        dlength = min(len(dtemplate), int(drate*sweep_dur))
+        dstep = max(1, int(drate*0.0005))
+        dbest, dbest_c = expected // dec, -2.0
+        on = lo // dec
+        dhi = hi // dec
+        while on <= dhi:
+            c = _corr_at_onset(dsamples, dtemplate, on, dlength)
+            if c > dbest_c:
+                dbest_c, dbest = c, on
+            on += dstep
+        centre = dbest * dec
+        span = dec * dstep * 2
+    else:
+        centre, span = expected, hi - lo
+
+    fstep = max(1, int(rate*0.0002))
+    flo, fhi = max(lo, centre - span), min(hi, centre + span)
     best_on, best_c = expected, _corr_at_onset(samples, template, expected, length)
-    on = lo
-    while on <= hi:
-        c = _corr_at_onset(samples, template, on, length)
-        if c > best_c:
-            best_c, best_on = c, on
-        on += coarse
-    fstep = max(1, int(rate*0.001))
-    on = max(lo, best_on - coarse)
-    fine_hi = min(hi, best_on + coarse)
-    while on <= fine_hi:
+    on = flo
+    while on <= fhi:
         c = _corr_at_onset(samples, template, on, length)
         if c > best_c:
             best_c, best_on = c, on
         on += fstep
+    for on in range(max(lo, best_on - fstep), min(hi, best_on + fstep) + 1):
+        c = _corr_at_onset(samples, template, on, length)
+        if c > best_c:
+            best_c, best_on = c, on
     return max(0, min(best_on, max(0, len(samples)-1)))
 
 def recording_bands(samples, rate, onset, sweep_dur):
