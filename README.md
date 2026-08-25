@@ -66,7 +66,8 @@ back rather than troubleshooting blind.
 
 - Raspberry Pi 3B+ or newer
 - Raspberry Pi OS (Bookworm, 64-bit Lite is fine), with the username set to `pi`
-- The test box (Pi + speaker + foam + the two LEDs wired to the GPIO header)
+- The test box (Pi + the two LEDs and button wired to the GPIO header).
+  There is no speaker in the box: the unit plays the sweep through its own
 - A fixed reference microphone mounted permanently in the box, close to where
   the unit under test sits (see "Reference mic" below) -- every unit is now
   scored against this mic, so the station cannot test anything without it
@@ -215,7 +216,7 @@ sudo /opt/usb_audio_test/usb_audio_test.py
 ## Calibrating the box
 
 Calibration learns what a good unit reads in this box, and every limit comes
-from that. Calibrate when you set up a new box, change the foam, speaker or
+from that. Calibrate when you set up a new box, change the
 reference mic, move the reference, or start testing a different product.
 
 Calibrate with more than one known-good unit if you have them. Units vary
