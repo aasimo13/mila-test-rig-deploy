@@ -125,8 +125,8 @@ continue below. When `ssh` or `scp` asks for a password, use the one you set abo
 
 ## Step 2: Get the files onto the Pi
 
-SSH into the Pi and clone the station repo. It is private, so git will ask
-for your GitHub username and a personal access token:
+SSH into the Pi and clone the station repo. It is public, so no login is
+needed:
 
 ```
 ssh pi@<pi-hostname>.local
